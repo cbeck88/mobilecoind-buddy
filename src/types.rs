@@ -40,6 +40,8 @@ impl TokenInfo {
 /// A validated quote that we got from the deqs
 #[derive(Clone, Debug)]
 pub struct ValidatedQuote {
+    /// Quote id
+    pub id: Vec<u8>,
     /// The sci, needed when we match against the quote
     pub sci: SignedContingentInput,
     /// The sci amounts, produced by sci.validate(). Needed to help with partial fill arithmetic.
@@ -53,9 +55,11 @@ impl TryFrom<&deqs_api::deqs::Quote> for ValidatedQuote {
     fn try_from(src: &deqs_api::deqs::Quote) -> Result<Self, Self::Error> {
         let sci = SignedContingentInput::try_from(src.get_sci()).map_err(|err| err.to_string())?;
         let amounts = sci.validate().map_err(|err| err.to_string())?;
+        let id = src.get_id().data.to_vec();
         let timestamp = src.timestamp;
 
         Ok(Self {
+            id,
             sci,
             amounts,
             timestamp,
@@ -246,6 +250,8 @@ pub struct QuoteInfo {
 /// The output of a quote selection algorithm that tries to find the best quote to obtain one amount.
 #[derive(Clone, Debug)]
 pub struct QuoteSelection {
+    // The quote id we selected
+    pub id: Vec<u8>,
     // The sci we selected
     pub sci: SignedContingentInput,
     // The partial fill value to use when adding this to a Tx
@@ -307,6 +313,7 @@ impl QuoteSelection {
                     let from_value_decimal =
                         Decimal::new(from_u64_value as i64, from_token_info.decimals);
                     candidates.push(QuoteSelection {
+                        id: quote.id.clone(),
                         sci: quote.sci.clone(),
                         partial_fill_value: to_amount.value,
                         from_u64_value,
@@ -339,6 +346,7 @@ impl QuoteSelection {
                     let from_value_decimal =
                         Decimal::new(from_u64_value as i64, from_token_info.decimals);
                     candidates.push(QuoteSelection {
+                        id: quote.id.clone(),
                         sci: quote.sci.clone(),
                         partial_fill_value: 0,
                         from_u64_value,

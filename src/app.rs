@@ -42,6 +42,8 @@ pub struct App {
     swap_to_token_id: TokenId,
     /// Which token value we most recently selected to swap for (per swap_to_token_id)
     swap_to_value: HashMap<TokenId, String>,
+    /// Whether to show deatils in the swap pane
+    swap_details: bool,
     /// The base token id in the offer_swap pane
     base_token_id: TokenId,
     /// The counter token id in the offer_swap pane
@@ -68,6 +70,7 @@ impl Default for App {
             swap_from_value: Default::default(),
             swap_to_token_id: TokenId::from(1),
             swap_to_value: Default::default(),
+            swap_details: false,
             base_token_id: TokenId::from(0),
             counter_token_id: TokenId::from(1),
             offer_price: Default::default(),
@@ -420,7 +423,7 @@ impl eframe::App for App {
                             Ok(qs)
                         });
 
-                    match okay_to_submit {
+                    match okay_to_submit.as_ref() {
                         Ok(qs) => {
                             *self
                                 .swap_from_value
@@ -431,7 +434,7 @@ impl eframe::App for App {
                                 // We pay the fee in the from_token_id
                                 let fee_token_id = self.swap_from_token_id;
                                 worker.perform_swap(
-                                    qs.sci,
+                                    qs.sci.clone(),
                                     qs.partial_fill_value,
                                     self.swap_from_token_id,
                                     fee_token_id,
@@ -439,8 +442,48 @@ impl eframe::App for App {
                             }
                         }
                         Err(err_str) => {
-                            ui.label(err_str);
+                            ui.label(err_str.clone());
                             ui.add_enabled(false, Button::new("Submit"));
+                        }
+                    }
+
+                    ui.label("");
+                    ui.separator();
+                    ui.checkbox(&mut self.swap_details, "Details");
+                    if self.swap_details && swap_from_token_info.is_some() && swap_to_token_info.is_some() {
+                        ui.label(format!("{}/{} quotes", swap_to_token_info.unwrap().symbol, swap_from_token_info.unwrap().symbol));
+                        if quote_book.is_empty() {
+                            ui.label("No quotes found");
+                        } else {
+                            Grid::new("details_table".to_owned()).show(ui, |ui| {
+                                ui.label("Price              ");
+                                ui.label("Volume             ");
+                                ui.end_row();
+
+                                for validated_quote in quote_book {
+                                    match validated_quote.get_quote_info(
+                                        self.swap_to_token_id,
+                                        self.swap_from_token_id,
+                                        &token_infos,
+                                    ) {
+                                        Ok(info) => {
+                                            // Highlight the text if this is the quote we selected
+                                            if okay_to_submit.as_ref().map(|quote_selection| quote_selection.id == validated_quote.id).unwrap_or(false) {
+                                                let color = Color32::from_rgb(192, 192, 0);
+                                                ui.label(RichText::new(info.price.to_string()).color(color));
+                                                ui.label(RichText::new(info.volume.to_string()).color(color));                                            
+                                            } else {
+                                                ui.label(info.price.to_string());
+                                                ui.label(info.volume.to_string());
+                                            }
+                                            ui.end_row();
+                                        }
+                                        Err(err) => {
+                                            event!(Level::ERROR, "get quote info: {}", err);
+                                        }
+                                    }
+                                }
+                            });
                         }
                     }
                 }
