@@ -359,7 +359,8 @@ impl eframe::App for App {
                         &mut self.swap_from_token_id,
                         &mut self.swap_from_value,
                     );
-                    ui.label("↓");
+                    // TODO: add a down arrow that renders in this font, or use an image?
+                    ui.label("");
                     Self::amount_selector(
                         ui,
                         "Swap to",
