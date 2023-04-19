@@ -91,6 +91,10 @@ impl App {
             App::default()
         };
 
+        // If we start on the "offer swap" screen then we need to have the worker already
+        // knowing it should poll for relevant data
+        worker.get_quotes_for_token_ids(result.base_token_id, result.counter_token_id);
+
         result.worker = Some(worker);
         result
     }
