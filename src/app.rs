@@ -93,7 +93,15 @@ impl App {
 
         // If we start on the "offer swap" screen then we need to have the worker already
         // knowing it should poll for relevant data
-        worker.get_quotes_for_token_ids(result.base_token_id, result.counter_token_id);
+        match result.mode {
+            Mode::Swap => {
+                worker.get_quotes_for_token_ids(result.swap_from_token_id, result.swap_to_token_id);
+            }
+            Mode::OfferSwap => {
+                worker.get_quotes_for_token_ids(result.base_token_id, result.counter_token_id);
+            }
+            _ => {}
+        }
 
         result.worker = Some(worker);
         result
@@ -228,10 +236,7 @@ impl eframe::App for App {
                 columns[3].vertical_centered(|ui| {
                     if ui.button("Offer Swap").clicked() {
                         self.mode = Mode::OfferSwap;
-                        worker.get_quotes_for_token_ids(
-                            self.swap_to_token_id,
-                            self.swap_from_token_id,
-                        );
+                        worker.get_quotes_for_token_ids(self.base_token_id, self.counter_token_id);
                     }
                 });
             });
