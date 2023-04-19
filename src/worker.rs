@@ -30,7 +30,6 @@ pub struct Worker {
     /// The connection to deqs (if any)
     deqs_client: Option<DeqsClient>,
     /// The account key holding our funds
-    #[allow(unused)]
     account_key: AccountKey,
     /// The monitor id we registered account with in mobilecoind
     monitor_id: Vec<u8>,
@@ -58,6 +57,8 @@ struct WorkerState {
     pub total_blocks: u64,
     /// The current balance of this account
     pub balance: HashMap<TokenId, u64>,
+    /// The current utxos of this account
+    pub utxos: HashMap<TokenId, Vec<mcd_api::UnspentTxOut>>,
     /// The current token ids to poll for deqs
     /// Empty if the user is not trying to swap right now
     pub get_quotes_token_ids: Option<(TokenId, TokenId)>,
@@ -601,6 +602,60 @@ impl Worker {
         };
     }
 
+    /// Self spend a utxo in order to cancel a quote
+    pub fn self_spend(&self, utxo: &mcd_api::UnspentTxOut) {
+        let mut request = mcd_api::GenerateTxFromTxOutListRequest::new();
+        request.set_account_key((&self.account_key).into());
+        request.set_input_list(vec![utxo.clone()].into());
+        request.set_receiver(self.monitor_public_address.clone());
+        request.set_token_id(utxo.token_id);
+
+        let mut retries = 3;
+        let mut resp = loop {
+            match self
+                .mobilecoind_api_client
+                .generate_tx_from_tx_out_list(&request)
+            {
+                Ok(resp) => break resp,
+                Err(err) => {
+                    let err_msg = format!("failed generating self-payment: {err}");
+                    event!(Level::ERROR, err_msg);
+                    retries -= 1;
+                    if retries == 0 {
+                        let mut st = self.state.lock().unwrap();
+                        st.errors.push_back(err_msg);
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_millis(200));
+                    continue;
+                }
+            };
+        };
+
+        let mut req = mcd_api::SubmitTxRequest::new();
+        req.set_tx_proposal(resp.take_tx_proposal());
+
+        loop {
+            match self.mobilecoind_api_client.submit_tx(&req) {
+                Ok(_resp) => {
+                    event!(Level::INFO, "submitted cancellation tx successfully");
+                    return;
+                }
+                Err(err) => {
+                    event!(Level::ERROR, "failed to submit cancellation tx: {}", err);
+                    retries -= 1;
+                    if retries == 0 {
+                        let mut st = self.state.lock().unwrap();
+                        st.errors.push_back(err.to_string());
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_millis(200));
+                    continue;
+                }
+            };
+        }
+    }
+
     /// Get the error at the front of the error queue, if any.
     pub fn top_error(&self) -> Option<String> {
         self.state.lock().unwrap().errors.get(0).cloned()
@@ -767,6 +822,22 @@ impl Worker {
                 *st.balance.entry(*token_id).or_default() = resp.balance;
             }
         }
+
+        // Get unspent utxo list
+        {
+            for token_id in minimum_fees.keys() {
+                event!(Level::TRACE, "worker: get_unspent_txos: {}", *token_id);
+                // FIXME: We should also check some other subaddresses most likely
+                let mut req = mcd_api::GetUnspentTxOutListRequest::new();
+                req.set_monitor_id(monitor_id.to_owned());
+                req.set_token_id(**token_id);
+                let mut resp = client.get_unspent_tx_out_list(&req)?;
+
+                let mut st = state.lock().unwrap();
+                *st.utxos.entry(*token_id).or_default() = resp.take_output_list().into();
+            }
+        }
+
         Ok(())
     }
 
@@ -805,7 +876,21 @@ impl Worker {
                     .get_quotes()
                     .iter()
                     .filter_map(|quote| match ValidatedQuote::try_from(quote) {
-                        Ok(validated_quote) => Some(validated_quote),
+                        Ok(mut validated_quote) => {
+                            // Test if the quote is ours, return the utxo if it matches one, or None otherwise.
+                            let st = state.lock().unwrap();
+                            validated_quote.is_ours = st
+                                .utxos
+                                .get(&validated_quote.amounts.pseudo_output.token_id)
+                                .and_then(|utxos| {
+                                    utxos.iter().find(|utxo| {
+                                        utxo.get_key_image().get_data()
+                                            == &validated_quote.sci.mlsag.key_image.as_bytes()[..]
+                                    })
+                                })
+                                .cloned();
+                            Some(validated_quote)
+                        }
                         Err(err) => {
                             event!(Level::ERROR, "validating quote: {}", err);
                             None

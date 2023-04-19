@@ -1,5 +1,6 @@
 pub use mc_transaction_types::{Amount, TokenId};
 
+use mc_mobilecoind_api::{self as mcd_api};
 use mc_transaction_extra::{SignedContingentInput, SignedContingentInputAmounts};
 use rust_decimal::{prelude::*, Decimal};
 use std::str::FromStr;
@@ -48,6 +49,8 @@ pub struct ValidatedQuote {
     pub amounts: SignedContingentInputAmounts,
     /// u64 timestamp
     pub timestamp: u64,
+    /// True if the quote belongs to this account. A mobilecoind UTXO is included it if it is.
+    pub is_ours: Option<mcd_api::UnspentTxOut>,
 }
 
 impl TryFrom<&deqs_api::deqs::Quote> for ValidatedQuote {
@@ -57,12 +60,14 @@ impl TryFrom<&deqs_api::deqs::Quote> for ValidatedQuote {
         let amounts = sci.validate().map_err(|err| err.to_string())?;
         let id = src.get_id().data.to_vec();
         let timestamp = src.timestamp;
+        let is_ours = None;
 
         Ok(Self {
             id,
             sci,
             amounts,
             timestamp,
+            is_ours,
         })
     }
 }

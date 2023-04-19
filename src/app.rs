@@ -450,8 +450,15 @@ impl eframe::App for App {
                     ui.label("");
                     ui.separator();
                     ui.checkbox(&mut self.swap_details, "Details");
-                    if self.swap_details && swap_from_token_info.is_some() && swap_to_token_info.is_some() {
-                        ui.label(format!("{}/{} quotes", swap_to_token_info.unwrap().symbol, swap_from_token_info.unwrap().symbol));
+                    if self.swap_details
+                        && swap_from_token_info.is_some()
+                        && swap_to_token_info.is_some()
+                    {
+                        ui.label(format!(
+                            "{}/{} quotes",
+                            swap_to_token_info.unwrap().symbol,
+                            swap_from_token_info.unwrap().symbol
+                        ));
                         if quote_book.is_empty() {
                             ui.label("No quotes found");
                         } else {
@@ -468,10 +475,22 @@ impl eframe::App for App {
                                     ) {
                                         Ok(info) => {
                                             // Highlight the text if this is the quote we selected
-                                            if okay_to_submit.as_ref().map(|quote_selection| quote_selection.id == validated_quote.id).unwrap_or(false) {
+                                            if okay_to_submit
+                                                .as_ref()
+                                                .map(|quote_selection| {
+                                                    quote_selection.id == validated_quote.id
+                                                })
+                                                .unwrap_or(false)
+                                            {
                                                 let color = Color32::from_rgb(192, 192, 0);
-                                                ui.label(RichText::new(info.price.to_string()).color(color));
-                                                ui.label(RichText::new(info.volume.to_string()).color(color));                                            
+                                                ui.label(
+                                                    RichText::new(info.price.to_string())
+                                                        .color(color),
+                                                );
+                                                ui.label(
+                                                    RichText::new(info.volume.to_string())
+                                                        .color(color),
+                                                );
                                             } else {
                                                 ui.label(info.price.to_string());
                                                 ui.label(info.volume.to_string());
@@ -698,6 +717,7 @@ impl eframe::App for App {
                                 Grid::new(format!("{}_table", headings[idx])).show(ui, |ui| {
                                     ui.label("Price              ");
                                     ui.label("Volume             ");
+                                    ui.label(" ");
                                     ui.end_row();
 
                                     for validated_quote in books.get(idx).unwrap() {
@@ -709,6 +729,16 @@ impl eframe::App for App {
                                             Ok(info) => {
                                                 ui.label(info.price.to_string());
                                                 ui.label(info.volume.to_string());
+                                                match validated_quote.is_ours.as_ref() {
+                                                    Some(utxo) => {
+                                                        if ui.button("⊗").clicked() {
+                                                            worker.self_spend(utxo)
+                                                        }
+                                                    }
+                                                    None => {
+                                                        ui.label("");
+                                                    }
+                                                }
                                                 ui.end_row();
                                             }
                                             Err(err) => {
