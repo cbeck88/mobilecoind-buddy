@@ -1,4 +1,4 @@
-use crate::{Amount, Config, QuoteSelection, TokenId, TokenInfo, Worker};
+use crate::{Amount, Config, QuoteSelection, QuoteSide, TokenId, TokenInfo, Worker};
 use egui::{
     Align, Button, CentralPanel, Color32, ComboBox, Grid, Layout, RichText, ScrollArea,
     TopBottomPanel,
@@ -702,17 +702,17 @@ impl eframe::App for App {
                     // Show the quote book
 
                     let books = [
-                        worker.get_quote_book(self.base_token_id, self.counter_token_id),
                         worker.get_quote_book(self.counter_token_id, self.base_token_id),
+                        worker.get_quote_book(self.base_token_id, self.counter_token_id),
                     ];
-                    let headings = ["Bid", "Ask"];
+                    let headings = [QuoteSide::Bid, QuoteSide::Ask];
 
                     ScrollArea::vertical().show(ui, |ui| {
                         ui.columns(2, |columns| {
                             for idx in 0..2 {
                                 let ui = &mut columns[idx];
 
-                                ui.heading(headings[idx]);
+                                ui.heading(headings[idx].to_string());
 
                                 Grid::new(format!("{}_table", headings[idx])).show(ui, |ui| {
                                     ui.label("Price              ");
@@ -727,6 +727,7 @@ impl eframe::App for App {
                                             &token_infos,
                                         ) {
                                             Ok(info) => {
+                                                assert_eq!(info.quote_side, headings[idx]);
                                                 ui.label(info.price.to_string());
                                                 ui.label(info.volume.to_string());
                                                 match validated_quote.is_ours.as_ref() {

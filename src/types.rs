@@ -1,5 +1,6 @@
 pub use mc_transaction_types::{Amount, TokenId};
 
+use displaydoc::Display;
 use mc_mobilecoind_api::{self as mcd_api};
 use mc_transaction_extra::{SignedContingentInput, SignedContingentInputAmounts};
 use rust_decimal::{prelude::*, Decimal};
@@ -227,9 +228,11 @@ impl ValidatedQuote {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Display, Eq, PartialEq)]
 pub enum QuoteSide {
+    /// Bid
     Bid,
+    /// Ask
     Ask,
 }
 
@@ -255,15 +258,15 @@ pub struct QuoteInfo {
 /// The output of a quote selection algorithm that tries to find the best quote to obtain one amount.
 #[derive(Clone, Debug)]
 pub struct QuoteSelection {
-    // The quote id we selected
+    /// The quote id we selected
     pub id: Vec<u8>,
-    // The sci we selected
+    /// The sci we selected
     pub sci: SignedContingentInput,
-    // The partial fill value to use when adding this to a Tx
+    /// The partial fill value to use when adding this to a Tx
     pub partial_fill_value: u64,
-    // The u64 value which must be supplied to fulfill this quote
+    /// The u64 value which must be supplied to fulfill this quote
     pub from_u64_value: u64,
-    // The from value as a scaled Decimal
+    /// The from value as a scaled Decimal
     pub from_value_decimal: Decimal,
 }
 
