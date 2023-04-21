@@ -44,6 +44,8 @@ pub struct App {
     swap_to_value: HashMap<TokenId, String>,
     /// Whether to show deatils in the swap pane
     swap_details: bool,
+    /// Whether to display prices in swap_from / swap_to or swap_to / swap_from
+    reverse_swap_pair: bool,
     /// The base token id in the offer_swap pane
     base_token_id: TokenId,
     /// The counter token id in the offer_swap pane
@@ -71,6 +73,7 @@ impl Default for App {
             swap_to_token_id: TokenId::from(1),
             swap_to_value: Default::default(),
             swap_details: false,
+            reverse_swap_pair: false,
             base_token_id: TokenId::from(0),
             counter_token_id: TokenId::from(1),
             offer_price: Default::default(),
@@ -454,11 +457,29 @@ impl eframe::App for App {
                         && swap_from_token_info.is_some()
                         && swap_to_token_info.is_some()
                     {
+                        let (base_token_id, counter_token_id, base_token_info, counter_token_info) =
+                            match self.reverse_swap_pair {
+                                false => (
+                                    self.swap_from_token_id,
+                                    self.swap_to_token_id,
+                                    swap_from_token_info.unwrap(),
+                                    swap_to_token_info.unwrap(),
+                                ),
+                                true => (
+                                    self.swap_to_token_id,
+                                    self.swap_from_token_id,
+                                    swap_to_token_info.unwrap(),
+                                    swap_from_token_info.unwrap(),
+                                ),
+                            };
+
                         ui.label(format!(
                             "{}/{} quotes",
-                            swap_to_token_info.unwrap().symbol,
-                            swap_from_token_info.unwrap().symbol
+                            base_token_info.symbol, counter_token_info.symbol
                         ));
+                        if ui.button("Switch").clicked() {
+                            self.reverse_swap_pair = !self.reverse_swap_pair;
+                        }
                         if quote_book.is_empty() {
                             ui.label("No quotes found");
                         } else {
@@ -469,8 +490,8 @@ impl eframe::App for App {
 
                                 for validated_quote in quote_book {
                                     match validated_quote.get_quote_info(
-                                        self.swap_to_token_id,
-                                        self.swap_from_token_id,
+                                        base_token_id,
+                                        counter_token_id,
                                         &token_infos,
                                     ) {
                                         Ok(info) => {
