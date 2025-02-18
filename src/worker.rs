@@ -872,6 +872,7 @@ impl Worker {
                     *counter_token_id
                 );
                 let resp = client.get_quotes(&req)?;
+                event!(Level::TRACE, "got {} quotes in response: ", resp.get_quotes().len()); 
                 let validated_quotes: Vec<ValidatedQuote> = resp
                     .get_quotes()
                     .iter()

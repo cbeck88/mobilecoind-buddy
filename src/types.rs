@@ -104,22 +104,21 @@ impl ValidatedQuote {
                 if !self.amounts.required_outputs.is_empty() {
                     return Err("Ask SCI is too complicated for this implementation (mixing partial fill and required outputs)".to_owned());
                 }
-                if self.amounts.partial_fill_outputs.len() != 1 {
-                    return Err("Ask SCI is too complicated for this implementation (expected one partial fill output)".to_owned());
+                if self.amounts.partial_fill_outputs.iter().any(|output| output.token_id != counter_token_id) {
+                    return Err("Ask SCI does not belong to this book (partial fill output has unexpected token id)".to_owned());
                 }
-                if self.amounts.partial_fill_outputs[0].token_id != counter_token_id {
-                    return Err(
-                        "Ask SCI does not belong to this book (partial fill output)".to_owned()
-                    );
-                }
-                // TODO: should handle overflow at i64 conversion
+                let counter_volume = match self.amounts.partial_fill_outputs.len() {
+                    1 | 2 => {
+                        let total: u128 = self.amounts.partial_fill_outputs.iter().map(|output| output.value as u128).sum();
+                        Decimal::new(total.try_into().unwrap(), counter_token_info.decimals)                    
+                    },
+                    _ => {
+                        return Err("Ask SCI is too complicated for this implementation (expected one partial fill output, + maybe fee output)".to_owned());
+                    }
+                };
                 let volume = Decimal::new(
-                    self.amounts.pseudo_output.value as i64,
+                    self.amounts.pseudo_output.value.try_into().unwrap(),
                     base_token_info.decimals,
-                );
-                let counter_volume = Decimal::new(
-                    self.amounts.partial_fill_outputs[0].value as i64,
-                    counter_token_info.decimals,
                 );
                 let price = counter_volume / volume;
                 Ok(QuoteInfo {
@@ -133,20 +132,21 @@ impl ValidatedQuote {
                 if !self.amounts.partial_fill_outputs.is_empty() {
                     return Err("Invalid Ask SCI".to_owned());
                 }
-                if self.amounts.required_outputs.len() != 1 {
-                    return Err("Ask SCI is too complicated for this implementation (expected one required output)".to_owned());
+                if self.amounts.required_outputs.iter().any(|output| output.token_id != counter_token_id) {
+                    return Err("Ask SCI does not belong to this book (required output has unexpected token id)".to_owned());
                 }
-                if self.amounts.required_outputs[0].token_id != counter_token_id {
-                    return Err("Ask SCI does not belong to this book (required_output)".to_owned());
-                }
-                // TODO: should handle overflow at i64 conversion
+                let counter_volume = match self.amounts.required_outputs.len() {
+                    1 | 2 => {
+                        let total: u128 = self.amounts.required_outputs.iter().map(|output| output.value as u128).sum();
+                        Decimal::new(total.try_into().unwrap(), counter_token_info.decimals)                                        
+                    },
+                    _ => {
+                        return Err("Ask SCI is too complicated for this implementation (expected one required output, + maybe fee output)".to_owned());                    
+                    }
+                };
                 let volume = Decimal::new(
-                    self.amounts.pseudo_output.value as i64,
+                    self.amounts.pseudo_output.value.try_into().unwrap(),
                     base_token_info.decimals,
-                );
-                let counter_volume = Decimal::new(
-                    self.amounts.required_outputs[0].value as i64,
-                    counter_token_info.decimals,
                 );
                 let price = counter_volume / volume;
                 Ok(QuoteInfo {
@@ -158,7 +158,7 @@ impl ValidatedQuote {
                 })
             }
         } else if self.amounts.pseudo_output.token_id == counter_token_id {
-            // Quote is offering the counter token, so this should be an bid
+            // Quote is offering the counter token, so this should be a bid
             let quote_side = QuoteSide::Bid;
 
             if let Some(partial_fill_change) = self.amounts.partial_fill_change.as_ref() {
@@ -168,23 +168,21 @@ impl ValidatedQuote {
                 if !self.amounts.required_outputs.is_empty() {
                     return Err("Bid SCI is too complicated for this implementation (mixing partial fill and required outputs)".to_owned());
                 }
-                if self.amounts.partial_fill_outputs.len() != 1 {
-                    return Err("Bid SCI is too complicated for this implementation (expected one partial fill output)".to_owned());
+                if self.amounts.partial_fill_outputs.iter().any(|output| output.token_id != base_token_id) {
+                    return Err("Bid SCI does not belong to this book (partial fill output has unexpected token id)".to_owned());
                 }
-                if self.amounts.partial_fill_outputs[0].token_id != base_token_id {
-                    return Err(format!(
-                        "Bid SCI does not belong to this book (partial fill output) {} != {}",
-                        self.amounts.partial_fill_outputs[0].token_id, base_token_id
-                    ));
-                }
-                // TODO: should handle overflow at i64 conversion
+                let volume = match self.amounts.partial_fill_outputs.len() {
+                    1 | 2 => {
+                        let total: u128 = self.amounts.partial_fill_outputs.iter().map(|output| output.value as u128).sum();
+                        Decimal::new(total.try_into().unwrap(), base_token_info.decimals)                    
+                    },
+                    _ => {
+                        return Err("Bid SCI is too complicated for this implementation (expected one partial fill output, + maybe fee output)".to_owned());
+                    },
+                };
                 let counter_volume = Decimal::new(
-                    self.amounts.pseudo_output.value as i64,
+                    self.amounts.pseudo_output.value.try_into().unwrap(),
                     counter_token_info.decimals,
-                );
-                let volume = Decimal::new(
-                    self.amounts.partial_fill_outputs[0].value as i64,
-                    base_token_info.decimals,
                 );
                 let price = counter_volume / volume;
                 Ok(QuoteInfo {
@@ -198,20 +196,21 @@ impl ValidatedQuote {
                 if !self.amounts.partial_fill_outputs.is_empty() {
                     return Err("Invalid Bid SCI".to_owned());
                 }
-                if self.amounts.required_outputs.len() != 1 {
-                    return Err("Bid SCI is too complicated for this implementation (expected one required output)".to_owned());
+                if self.amounts.required_outputs.iter().any(|output| output.token_id != base_token_id) {
+                    return Err("Bid SCI does not belong to this book (required output has unexpected token id)".to_owned());
                 }
-                if self.amounts.required_outputs[0].token_id != base_token_id {
-                    return Err("Bid SCI does not belong to this book (required_output)".to_owned());
-                }
-                // TODO: should handle overflow at i64 conversion
+                let volume = match self.amounts.required_outputs.len() {
+                    1 | 2 => {
+                        let total: u128 = self.amounts.required_outputs.iter().map(|output| output.value as u128).sum();
+                        Decimal::new(total.try_into().unwrap(), base_token_info.decimals)                                        
+                    },
+                    _ => {
+                        return Err("Bid SCI is too complicated for this implementation (expected one required output, + maybe fee output)".to_owned());                    
+                    }
+                };
                 let counter_volume = Decimal::new(
-                    self.amounts.pseudo_output.value as i64,
+                    self.amounts.pseudo_output.value.try_into().unwrap(),
                     counter_token_info.decimals,
-                );
-                let volume = Decimal::new(
-                    self.amounts.required_outputs[0].value as i64,
-                    base_token_info.decimals,
                 );
                 let price = counter_volume / volume;
                 Ok(QuoteInfo {

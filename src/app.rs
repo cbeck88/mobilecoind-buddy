@@ -54,6 +54,8 @@ pub struct App {
     offer_price: String,
     /// The volume in the offer_swap pane
     offer_volume: String,
+    /// The number of pixels per point. This affects the size of the view.
+    pixels_per_point: f32,
     /// The worker is doing balance checking with mobilecoind in the background,
     /// and fetching a quotebook from deqs if available.
     #[serde(skip)]
@@ -78,6 +80,7 @@ impl Default for App {
             counter_token_id: TokenId::from(1),
             offer_price: Default::default(),
             offer_volume: Default::default(),
+            pixels_per_point: 2.0,
             worker: None,
         }
     }
@@ -85,7 +88,7 @@ impl Default for App {
 
 impl App {
     /// Called once before the first frame.
-    pub fn new(cc: &eframe::CreationContext<'_>, _config: Config, worker: Arc<Worker>) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>, config: Config, worker: Arc<Worker>) -> Self {
         // This is also where you can customize the look and feel of egui using
         // `cc.egui_ctx.set_visuals` and `cc.egui_ctx.set_fonts`.
 
@@ -96,6 +99,10 @@ impl App {
         } else {
             App::default()
         };
+
+        if let Some(ppp) = config.pixels_per_point {
+            result.pixels_per_point = ppp as f32;
+        }
 
         // If we start on the "offer swap" screen then we need to have the worker already
         // knowing it should poll for relevant data
@@ -166,7 +173,7 @@ impl eframe::App for App {
             .expect("intialization failed, no worker is present");
 
         // Makes the font appear large enough to read
-        ctx.set_pixels_per_point(4.0);
+        ctx.set_pixels_per_point(2.0);
         // Make the app redraw itself even without movement
         ctx.request_repaint_after(Duration::from_millis(100));
 
