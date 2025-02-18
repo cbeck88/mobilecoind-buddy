@@ -30,7 +30,6 @@ pub struct Worker {
     /// The connection to deqs (if any)
     deqs_client: Option<DeqsClient>,
     /// The account key holding our funds
-    #[allow(unused)]
     account_key: AccountKey,
     /// The monitor id we registered account with in mobilecoind
     monitor_id: Vec<u8>,
@@ -40,6 +39,8 @@ pub struct Worker {
     monitor_b58_address: String,
     /// The minimum fees for this network
     minimum_fees: HashMap<TokenId, u64>,
+    /// The chain id of the network
+    chain_id: String,
     /// The state that is mutable after initialization (updated by worker thread)
     state: Arc<Mutex<WorkerState>>,
     /// The worker thread handle
@@ -56,6 +57,8 @@ struct WorkerState {
     pub total_blocks: u64,
     /// The current balance of this account
     pub balance: HashMap<TokenId, u64>,
+    /// The current utxos of this account
+    pub utxos: HashMap<TokenId, Vec<mcd_api::UnspentTxOut>>,
     /// The current token ids to poll for deqs
     /// Empty if the user is not trying to swap right now
     pub get_quotes_token_ids: Option<(TokenId, TokenId)>,
@@ -74,7 +77,22 @@ impl Drop for Worker {
     }
 }
 
+// Data returned when we try to connect to mobilecoind and set up a monitor
+struct MobilecoindSetupData {
+    // The monitor id of the monitor we created for this account
+    pub monitor_id: Vec<u8>,
+    // The public address of this account
+    pub monitor_public_address: external::PublicAddress,
+    // The b58 address of this account
+    pub monitor_b58_address: String,
+    // The minimum fees of the network
+    pub minimum_fees: HashMap<TokenId, u64>,
+    // The chain id of the network
+    pub chain_id: String,
+}
+
 impl Worker {
+    /// Initialize a new worker from config
     pub fn new(config: Config) -> Result<Arc<Self>, WorkerInitError> {
         // Search for keyfile and load it
         let account_key = read_keyfile(config.keyfile.clone()).expect("Could not load keyfile");
@@ -88,7 +106,13 @@ impl Worker {
         let mobilecoind_api_client = MobilecoindApiClient::new(ch);
 
         let mut retries = 10;
-        let (monitor_id, monitor_public_address, monitor_b58_address, minimum_fees) = loop {
+        let MobilecoindSetupData {
+            monitor_id,
+            monitor_public_address,
+            monitor_b58_address,
+            minimum_fees,
+            chain_id,
+        } = loop {
             match Self::try_new_mobilecoind(&mobilecoind_api_client, &account_key) {
                 Ok(result) => break result,
                 Err(err) => event!(Level::ERROR, "Initialization failed, will retry: {}", err),
@@ -139,21 +163,25 @@ impl Worker {
             monitor_public_address,
             monitor_b58_address,
             minimum_fees,
+            chain_id,
             state,
             join_handle,
             stop_requested,
         }))
     }
 
+    /// Get the b58 address of the monitored account.
     pub fn get_b58_address(&self) -> String {
         self.monitor_b58_address.clone()
     }
 
+    /// Get the sync progress of the monitored account
     pub fn get_sync_progress(&self) -> (u64, u64) {
         let st = self.state.lock().unwrap();
         (st.synced_blocks, st.total_blocks)
     }
 
+    /// Get the token info of tokens known to us, and configured on this network
     pub fn get_token_info(&self) -> Vec<TokenInfo> {
         // Hard-coded symbol and decimals per token id
         let result = vec![
@@ -188,6 +216,11 @@ impl Worker {
                 }
             })
             .collect()
+    }
+
+    /// Get the chain id of the network
+    pub fn get_chain_id(&self) -> String {
+        self.chain_id.clone()
     }
 
     /// Get the balances of the monitored account.
@@ -288,7 +321,7 @@ impl Worker {
                     err
                 );
                 let mut st = self.state.lock().unwrap();
-                st.errors.push_back(err.to_string());
+                st.errors.push_back(err);
                 return;
             }
         };
@@ -491,12 +524,45 @@ impl Worker {
     }
 
     /// Act as the counterparty to a given swap
+    ///
+    /// Arguments:
+    /// sci - sci to fulfill
+    /// partial_fill_value - degree to fill it to
+    /// from_token_id - the token id we need to pay in order to fulfill the sci
+    /// fee_token_id - the token id to pay the fee in
     pub fn perform_swap(
         &self,
         sci: SignedContingentInput,
         partial_fill_value: u64,
+        from_token_id: TokenId,
         fee_token_id: TokenId,
     ) {
+        // First we have to get utxo list from mobilecoind
+        let mut retries = 3;
+        let mut response = loop {
+            let mut request = mcd_api::GetUnspentTxOutListRequest::new();
+            request.set_monitor_id(self.monitor_id.clone());
+            request.set_subaddress_index(0);
+            request.set_token_id(*from_token_id);
+            match self
+                .mobilecoind_api_client
+                .get_unspent_tx_out_list(&request)
+            {
+                Ok(resp) => break resp,
+                Err(err) => {
+                    let err_msg = format!("failed getting unspent tx out list: {err}");
+                    event!(Level::ERROR, err_msg);
+                    retries -= 1;
+                    if retries == 0 {
+                        let mut st = self.state.lock().unwrap();
+                        st.errors.push_back(err_msg);
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_millis(200));
+                }
+            };
+        };
+
         let mut sci_for_tx = mcd_api::SciForTx::new();
         sci_for_tx.set_sci((&sci).into());
         sci_for_tx.set_partial_fill_value(partial_fill_value);
@@ -504,10 +570,27 @@ impl Worker {
         let mut req = mcd_api::GenerateMixedTxRequest::new();
         req.set_sender_monitor_id(self.monitor_id.clone());
         req.set_change_subaddress(0);
+        req.set_input_list(response.take_output_list());
         req.set_scis(vec![sci_for_tx].into());
         req.set_fee_token_id(*fee_token_id);
 
-        match self.mobilecoind_api_client.generate_mixed_tx(&req) {
+        let mut resp = match self.mobilecoind_api_client.generate_mixed_tx(&req) {
+            Ok(resp) => {
+                event!(Level::DEBUG, "generated swap tx successfully");
+                resp
+            }
+            Err(err) => {
+                event!(Level::ERROR, "failed to generate swap tx: {}", err);
+                let mut st = self.state.lock().unwrap();
+                st.errors.push_back(err.to_string());
+                return;
+            }
+        };
+
+        let mut req = mcd_api::SubmitTxRequest::new();
+        req.set_tx_proposal(resp.take_tx_proposal());
+
+        match self.mobilecoind_api_client.submit_tx(&req) {
             Ok(_resp) => {
                 event!(Level::INFO, "submitted swap tx successfully");
             }
@@ -516,6 +599,60 @@ impl Worker {
                 let mut st = self.state.lock().unwrap();
                 st.errors.push_back(err.to_string());
             }
+        };
+    }
+
+    /// Self spend a utxo in order to cancel a quote
+    pub fn self_spend(&self, utxo: &mcd_api::UnspentTxOut) {
+        let mut request = mcd_api::GenerateTxFromTxOutListRequest::new();
+        request.set_account_key((&self.account_key).into());
+        request.set_input_list(vec![utxo.clone()].into());
+        request.set_receiver(self.monitor_public_address.clone());
+        request.set_token_id(utxo.token_id);
+
+        let mut retries = 3;
+        let mut resp = loop {
+            match self
+                .mobilecoind_api_client
+                .generate_tx_from_tx_out_list(&request)
+            {
+                Ok(resp) => break resp,
+                Err(err) => {
+                    let err_msg = format!("failed generating self-payment: {err}");
+                    event!(Level::ERROR, err_msg);
+                    retries -= 1;
+                    if retries == 0 {
+                        let mut st = self.state.lock().unwrap();
+                        st.errors.push_back(err_msg);
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_millis(200));
+                    continue;
+                }
+            };
+        };
+
+        let mut req = mcd_api::SubmitTxRequest::new();
+        req.set_tx_proposal(resp.take_tx_proposal());
+
+        loop {
+            match self.mobilecoind_api_client.submit_tx(&req) {
+                Ok(_resp) => {
+                    event!(Level::INFO, "submitted cancellation tx successfully");
+                    return;
+                }
+                Err(err) => {
+                    event!(Level::ERROR, "failed to submit cancellation tx: {}", err);
+                    retries -= 1;
+                    if retries == 0 {
+                        let mut st = self.state.lock().unwrap();
+                        st.errors.push_back(err.to_string());
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_millis(200));
+                    continue;
+                }
+            };
         }
     }
 
@@ -537,15 +674,7 @@ impl Worker {
     fn try_new_mobilecoind(
         mobilecoind_api_client: &MobilecoindApiClient,
         account_key: &AccountKey,
-    ) -> Result<
-        (
-            Vec<u8>,
-            mc_api::external::PublicAddress,
-            String,
-            HashMap<TokenId, u64>,
-        ),
-        String,
-    > {
+    ) -> Result<MobilecoindSetupData, String> {
         // Create a monitor using our account key
         let monitor_id = {
             let mut req = mcd_api::AddMonitorRequest::new();
@@ -577,27 +706,28 @@ impl Worker {
         assert!(monitor_printable_wrapper.has_public_address());
         let monitor_public_address = monitor_printable_wrapper.get_public_address();
 
-        // Get the network minimum fees and compute faucet amounts
-        let minimum_fees = {
-            let mut result = HashMap::<TokenId, u64>::default();
+        // Get the network minimum fees and chain id
+        let (minimum_fees, chain_id) = {
+            let mut minimum_fees = HashMap::<TokenId, u64>::default();
 
-            let resp = mobilecoind_api_client
+            let mut resp = mobilecoind_api_client
                 .get_network_status(&Default::default())
                 .map_err(|err| format!("Failed getting network status: {err}"))?;
 
             for (k, v) in resp.get_last_block_info().minimum_fees.iter() {
-                result.insert(k.into(), *v);
+                minimum_fees.insert(k.into(), *v);
             }
 
-            result
+            (minimum_fees, resp.take_chain_id())
         };
 
-        Ok((
+        Ok(MobilecoindSetupData {
             monitor_id,
-            monitor_public_address.clone(),
+            monitor_public_address: monitor_public_address.clone(),
             monitor_b58_address,
             minimum_fees,
-        ))
+            chain_id,
+        })
     }
 
     fn worker_thread_entrypoint(
@@ -653,7 +783,7 @@ impl Worker {
     }
 
     fn poll_mobilecoind(
-        monitor_id: &Vec<u8>,
+        monitor_id: &[u8],
         client: &MobilecoindApiClient,
         minimum_fees: &HashMap<TokenId, u64>,
         state: &Arc<Mutex<WorkerState>>,
@@ -671,7 +801,7 @@ impl Worker {
         {
             event!(Level::TRACE, "worker: check monitor status");
             let mut req = mcd_api::GetMonitorStatusRequest::new();
-            req.set_monitor_id(monitor_id.clone());
+            req.set_monitor_id(monitor_id.to_owned());
             let resp = client.get_monitor_status(&req)?;
 
             let mut st = state.lock().unwrap();
@@ -684,7 +814,7 @@ impl Worker {
                 event!(Level::TRACE, "worker: check balance: {}", *token_id);
                 // FIXME: We should also check some other subaddresses most likely
                 let mut req = mcd_api::GetBalanceRequest::new();
-                req.set_monitor_id(monitor_id.clone());
+                req.set_monitor_id(monitor_id.to_owned());
                 req.set_token_id(**token_id);
                 let resp = client.get_balance(&req)?;
 
@@ -692,6 +822,22 @@ impl Worker {
                 *st.balance.entry(*token_id).or_default() = resp.balance;
             }
         }
+
+        // Get unspent utxo list
+        {
+            for token_id in minimum_fees.keys() {
+                event!(Level::TRACE, "worker: get_unspent_txos: {}", *token_id);
+                // FIXME: We should also check some other subaddresses most likely
+                let mut req = mcd_api::GetUnspentTxOutListRequest::new();
+                req.set_monitor_id(monitor_id.to_owned());
+                req.set_token_id(**token_id);
+                let mut resp = client.get_unspent_tx_out_list(&req)?;
+
+                let mut st = state.lock().unwrap();
+                *st.utxos.entry(*token_id).or_default() = resp.take_output_list().into();
+            }
+        }
+
         Ok(())
     }
 
@@ -699,7 +845,7 @@ impl Worker {
         client: &DeqsClient,
         state: &Arc<Mutex<WorkerState>>,
     ) -> Result<(), grpcio::Error> {
-        let maybe_tokens = { state.lock().unwrap().get_quotes_token_ids.clone() };
+        let maybe_tokens = { state.lock().unwrap().get_quotes_token_ids };
         // Only do the poll if the ui thread told us we're looking at two particular tokens,
         // and then only if they are different tokens.
         if let Some((token1, token2)) = maybe_tokens {
@@ -726,11 +872,26 @@ impl Worker {
                     *counter_token_id
                 );
                 let resp = client.get_quotes(&req)?;
+                event!(Level::TRACE, "got {} quotes in response: ", resp.get_quotes().len()); 
                 let validated_quotes: Vec<ValidatedQuote> = resp
                     .get_quotes()
                     .iter()
                     .filter_map(|quote| match ValidatedQuote::try_from(quote) {
-                        Ok(validated_quote) => Some(validated_quote),
+                        Ok(mut validated_quote) => {
+                            // Test if the quote is ours, return the utxo if it matches one, or None otherwise.
+                            let st = state.lock().unwrap();
+                            validated_quote.is_ours = st
+                                .utxos
+                                .get(&validated_quote.amounts.pseudo_output.token_id)
+                                .and_then(|utxos| {
+                                    utxos.iter().find(|utxo| {
+                                        utxo.get_key_image().get_data()
+                                            == &validated_quote.sci.mlsag.key_image.as_bytes()[..]
+                                    })
+                                })
+                                .cloned();
+                            Some(validated_quote)
+                        }
                         Err(err) => {
                             event!(Level::ERROR, "validating quote: {}", err);
                             None

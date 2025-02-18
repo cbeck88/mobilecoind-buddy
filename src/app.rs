@@ -1,4 +1,4 @@
-use crate::{Amount, Config, QuoteSelection, TokenId, TokenInfo, Worker};
+use crate::{Amount, Config, QuoteSelection, QuoteSide, TokenId, TokenInfo, Worker};
 use egui::{
     Align, Button, CentralPanel, Color32, ComboBox, Grid, Layout, RichText, ScrollArea,
     TopBottomPanel,
@@ -6,6 +6,7 @@ use egui::{
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::{event, Level};
@@ -41,14 +42,20 @@ pub struct App {
     swap_to_token_id: TokenId,
     /// Which token value we most recently selected to swap for (per swap_to_token_id)
     swap_to_value: HashMap<TokenId, String>,
+    /// Whether to show deatils in the swap pane
+    swap_details: bool,
+    /// Whether to display prices in swap_from / swap_to or swap_to / swap_from
+    reverse_swap_pair: bool,
     /// The base token id in the offer_swap pane
     base_token_id: TokenId,
     /// The counter token id in the offer_swap pane
     counter_token_id: TokenId,
-    /// The base token volume in the offer_swap pane
-    base_volume: String,
-    /// The counter token volume in the offer_swap pane
-    counter_volume: String,
+    /// The price in the offer_swap pane
+    offer_price: String,
+    /// The volume in the offer_swap pane
+    offer_volume: String,
+    /// The number of pixels per point. This affects the size of the view.
+    pixels_per_point: f32,
     /// The worker is doing balance checking with mobilecoind in the background,
     /// and fetching a quotebook from deqs if available.
     #[serde(skip)]
@@ -67,10 +74,13 @@ impl Default for App {
             swap_from_value: Default::default(),
             swap_to_token_id: TokenId::from(1),
             swap_to_value: Default::default(),
+            swap_details: false,
+            reverse_swap_pair: false,
             base_token_id: TokenId::from(0),
-            base_volume: Default::default(),
             counter_token_id: TokenId::from(1),
-            counter_volume: Default::default(),
+            offer_price: Default::default(),
+            offer_volume: Default::default(),
+            pixels_per_point: 2.0,
             worker: None,
         }
     }
@@ -78,7 +88,7 @@ impl Default for App {
 
 impl App {
     /// Called once before the first frame.
-    pub fn new(cc: &eframe::CreationContext<'_>, _config: Config, worker: Arc<Worker>) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>, config: Config, worker: Arc<Worker>) -> Self {
         // This is also where you can customize the look and feel of egui using
         // `cc.egui_ctx.set_visuals` and `cc.egui_ctx.set_fonts`.
 
@@ -89,6 +99,22 @@ impl App {
         } else {
             App::default()
         };
+
+        if let Some(ppp) = config.pixels_per_point {
+            result.pixels_per_point = ppp as f32;
+        }
+
+        // If we start on the "offer swap" screen then we need to have the worker already
+        // knowing it should poll for relevant data
+        match result.mode {
+            Mode::Swap => {
+                worker.get_quotes_for_token_ids(result.swap_from_token_id, result.swap_to_token_id);
+            }
+            Mode::OfferSwap => {
+                worker.get_quotes_for_token_ids(result.base_token_id, result.counter_token_id);
+            }
+            _ => {}
+        }
 
         result.worker = Some(worker);
         result
@@ -147,7 +173,7 @@ impl eframe::App for App {
             .expect("intialization failed, no worker is present");
 
         // Makes the font appear large enough to read
-        ctx.set_pixels_per_point(4.0);
+        ctx.set_pixels_per_point(2.0);
         // Make the app redraw itself even without movement
         ctx.request_repaint_after(Duration::from_millis(100));
 
@@ -155,6 +181,9 @@ impl eframe::App for App {
         // it shows the public address and sync %
         TopBottomPanel::top("top_panel").show(ctx, |ui| {
             ui.with_layout(Layout::top_down(Align::Center), |ui| {
+                // Add a display of the network we are connected to
+                ui.strong(format!("Network: {}", worker.get_chain_id()));
+
                 // Add a display of the public address, and a copy button
                 let public_address = worker.get_b58_address();
                 if ui
@@ -220,10 +249,7 @@ impl eframe::App for App {
                 columns[3].vertical_centered(|ui| {
                     if ui.button("Offer Swap").clicked() {
                         self.mode = Mode::OfferSwap;
-                        worker.get_quotes_for_token_ids(
-                            self.swap_to_token_id,
-                            self.swap_from_token_id,
-                        );
+                        worker.get_quotes_for_token_ids(self.base_token_id, self.counter_token_id);
                     }
                 });
             });
@@ -282,12 +308,12 @@ impl eframe::App for App {
                                 Decimal::from(*balances.entry(self.send_token_id).or_default())
                                     .checked_mul(scale)
                             {
-                                ui.label(format!("balance: {}", balance.to_string()));
+                                ui.label(format!("balance: {}", balance));
                             } else {
                                 ui.label("balance: (overflow)");
                             }
                             if let Some(fee) = Decimal::from(info.fee).checked_mul(scale) {
-                                ui.label(format!("fee: {}", fee.to_string()));
+                                ui.label(format!("fee: {}", fee));
                             } else {
                                 ui.label("fee: (overflow)");
                             }
@@ -346,7 +372,8 @@ impl eframe::App for App {
                         &mut self.swap_from_token_id,
                         &mut self.swap_from_value,
                     );
-                    ui.label("↓");
+                    // TODO: add a down arrow that renders in this font, or use an image?
+                    ui.label("");
                     Self::amount_selector(
                         ui,
                         "Swap to",
@@ -384,6 +411,11 @@ impl eframe::App for App {
                             )?;
 
                             let to_amount = Amount::new(to_u64_value, self.swap_to_token_id);
+
+                            // TODO: If the user is modifying the swap_from_value field, it would be nice to do
+                            // quote selection based on that, and update the swap_to_value field. Uniswap works this way.
+                            // At this revision we only pay attention to the swap_to_value field, and always update swap_from_value
+                            // based on that.
                             let qs = QuoteSelection::new(
                                 &quote_book,
                                 self.swap_from_token_id,
@@ -392,7 +424,8 @@ impl eframe::App for App {
                             )?;
 
                             // Check if we have sufficient funds to do this
-                            let from_token_balance = balances.get(&self.swap_from_token_id).cloned().unwrap_or(0);
+                            let from_token_balance =
+                                balances.get(&self.swap_from_token_id).cloned().unwrap_or(0);
                             let from_token_fee = from_info.fee;
                             if from_token_balance < qs.from_u64_value + from_token_fee {
                                 return Err("insufficient funds".to_string());
@@ -400,7 +433,7 @@ impl eframe::App for App {
                             Ok(qs)
                         });
 
-                    match okay_to_submit {
+                    match okay_to_submit.as_ref() {
                         Ok(qs) => {
                             *self
                                 .swap_from_value
@@ -409,16 +442,95 @@ impl eframe::App for App {
                             ui.label("");
                             if ui.button("Submit").clicked() {
                                 // We pay the fee in the from_token_id
+                                let fee_token_id = self.swap_from_token_id;
                                 worker.perform_swap(
-                                    qs.sci,
+                                    qs.sci.clone(),
                                     qs.partial_fill_value,
                                     self.swap_from_token_id,
+                                    fee_token_id,
                                 );
                             }
                         }
                         Err(err_str) => {
-                            ui.label(err_str);
+                            ui.label(err_str.clone());
                             ui.add_enabled(false, Button::new("Submit"));
+                        }
+                    }
+
+                    ui.label("");
+                    ui.separator();
+                    ui.checkbox(&mut self.swap_details, "Details");
+                    if self.swap_details
+                        && swap_from_token_info.is_some()
+                        && swap_to_token_info.is_some()
+                    {
+                        let (base_token_id, counter_token_id, base_token_info, counter_token_info) =
+                            match self.reverse_swap_pair {
+                                false => (
+                                    self.swap_from_token_id,
+                                    self.swap_to_token_id,
+                                    swap_from_token_info.unwrap(),
+                                    swap_to_token_info.unwrap(),
+                                ),
+                                true => (
+                                    self.swap_to_token_id,
+                                    self.swap_from_token_id,
+                                    swap_to_token_info.unwrap(),
+                                    swap_from_token_info.unwrap(),
+                                ),
+                            };
+
+                        ui.label(format!(
+                            "{}/{} quotes",
+                            base_token_info.symbol, counter_token_info.symbol
+                        ));
+                        if ui.button("Switch").clicked() {
+                            self.reverse_swap_pair = !self.reverse_swap_pair;
+                        }
+                        if quote_book.is_empty() {
+                            ui.label("No quotes found");
+                        } else {
+                            Grid::new("details_table".to_owned()).show(ui, |ui| {
+                                ui.label("Price              ");
+                                ui.label("Volume             ");
+                                ui.end_row();
+
+                                for validated_quote in quote_book {
+                                    match validated_quote.get_quote_info(
+                                        base_token_id,
+                                        counter_token_id,
+                                        &token_infos,
+                                    ) {
+                                        Ok(info) => {
+                                            // Highlight the text if this is the quote we selected
+                                            if okay_to_submit
+                                                .as_ref()
+                                                .map(|quote_selection| {
+                                                    quote_selection.id == validated_quote.id
+                                                })
+                                                .unwrap_or(false)
+                                            {
+                                                let color = Color32::from_rgb(192, 192, 0);
+                                                ui.label(
+                                                    RichText::new(info.price.to_string())
+                                                        .color(color),
+                                                );
+                                                ui.label(
+                                                    RichText::new(info.volume.to_string())
+                                                        .color(color),
+                                                );
+                                            } else {
+                                                ui.label(info.price.to_string());
+                                                ui.label(info.volume.to_string());
+                                            }
+                                            ui.end_row();
+                                        }
+                                        Err(err) => {
+                                            event!(Level::ERROR, "get quote info: {}", err);
+                                        }
+                                    }
+                                }
+                            });
                         }
                     }
                 }
@@ -494,42 +606,101 @@ impl eframe::App for App {
                         }
                     };
 
-                    // User-specified volumes of the chosen tokens
+                    // User-specified price for base-token in terms of counter token
                     ui.horizontal(|ui| {
-                        ui.label(base_token_info.symbol.clone());
-                        ui.text_edit_singleline(&mut self.base_volume);
+                        ui.label(format!("Price ({})", counter_token_info.symbol.clone()));
+                        ui.text_edit_singleline(&mut self.offer_price);
                     });
                     ui.horizontal(|ui| {
-                        ui.label(counter_token_info.symbol.clone());
-                        ui.text_edit_singleline(&mut self.counter_volume);
+                        ui.label(format!("Volume ({})", base_token_info.symbol.clone()));
+                        ui.text_edit_singleline(&mut self.offer_volume);
                     });
 
-                    let base_u64_value = base_token_info.try_scaled_to_u64(&self.base_volume);
-                    let counter_u64_value =
-                        counter_token_info.try_scaled_to_u64(&self.counter_volume);
-
-                    // True if we have enough to conduct a buy
-                    let sufficient_counter_balance = counter_u64_value
-                        .clone()
-                        .map(|u64_value| {
-                            *balances.entry(self.counter_token_id).or_default() >= u64_value
+                    let base_volume =
+                        Decimal::from_str(&self.offer_volume).map_err(|err| err.to_string());
+                    let price = Decimal::from_str(&self.offer_price).map_err(|err| err.to_string());
+                    let counter_volume = base_volume.clone().and_then(|base_volume_decimal| {
+                        price.and_then(|price_decimal| {
+                            base_volume_decimal
+                                .checked_mul(price_decimal)
+                                .ok_or_else(|| "decimal overflow".to_owned())
                         })
-                        .unwrap_or(false);
-                    let buy_is_possible = sufficient_counter_balance && base_u64_value.is_ok();
+                    });
+                    let base_u64_value = base_volume
+                        .and_then(|base_vol| base_token_info.try_decimal_to_u64(base_vol));
+                    let counter_u64_value = counter_volume
+                        .and_then(|counter_vol| counter_token_info.try_decimal_to_u64(counter_vol));
 
-                    // True if we have enough to conduct a sell
-                    let sufficient_base_balance = base_u64_value
-                        .clone()
-                        .map(|u64_value| {
-                            *balances.entry(self.base_token_id).or_default() >= u64_value
-                        })
-                        .unwrap_or(false);
-                    let sell_is_possible = sufficient_base_balance && counter_u64_value.is_ok();
+                    // Computes the hint text for the buy button. The result is Ok if we can buy,
+                    // and Err if we cannot buy for some reason.
+                    let buy_is_possible: Result<String, String> =
+                        counter_u64_value.clone().and_then(|counter_u64_value| {
+                            base_u64_value.clone().and_then(|base_u64_value| {
+                                if *balances.entry(self.counter_token_id).or_default()
+                                    >= counter_u64_value
+                                {
+                                    // FIXME: check for i64 overflow
+                                    Ok(format!(
+                                        "Offer to trade {} {}\n for {} {}",
+                                        Decimal::new(
+                                            counter_u64_value as i64,
+                                            counter_token_info.decimals
+                                        ),
+                                        counter_token_info.symbol,
+                                        Decimal::new(
+                                            base_u64_value as i64,
+                                            base_token_info.decimals
+                                        ),
+                                        base_token_info.symbol
+                                    ))
+                                } else {
+                                    Err(format!("Insufficient {}", counter_token_info.symbol))
+                                }
+                            })
+                        });
+                    let buy_hint_text = match buy_is_possible.as_ref() {
+                        Ok(text) => text,
+                        Err(text) => text,
+                    };
+
+                    // Computes the hint text for the sell button. The result is Ok if we can sell,
+                    // and Err if we cannot sell for some reason.
+                    let sell_is_possible: Result<String, String> =
+                        base_u64_value.clone().and_then(|base_u64_value| {
+                            counter_u64_value.clone().and_then(|counter_u64_value| {
+                                if *balances.entry(self.base_token_id).or_default()
+                                    >= base_u64_value
+                                {
+                                    // FIXME: check for i64 overflow
+                                    Ok(format!(
+                                        "Offer to trade {} {}\n for {} {}",
+                                        Decimal::new(
+                                            base_u64_value as i64,
+                                            base_token_info.decimals
+                                        ),
+                                        base_token_info.symbol,
+                                        Decimal::new(
+                                            counter_u64_value as i64,
+                                            counter_token_info.decimals
+                                        ),
+                                        counter_token_info.symbol
+                                    ))
+                                } else {
+                                    Err(format!("Insufficient {}", base_token_info.symbol))
+                                }
+                            })
+                        });
+                    let sell_hint_text = match sell_is_possible.as_ref() {
+                        Ok(text) => text,
+                        Err(text) => text,
+                    };
 
                     // Add buy and sell buttons
                     ui.horizontal(|ui| {
                         if ui
-                            .add_enabled(buy_is_possible, Button::new("Buy"))
+                            .add_enabled(buy_is_possible.is_ok(), Button::new("Buy"))
+                            .on_hover_text(buy_hint_text)
+                            .on_disabled_hover_text(buy_hint_text)
                             .clicked()
                         {
                             let from_amount = Amount::new(
@@ -541,7 +712,9 @@ impl eframe::App for App {
                             worker.offer_swap(from_amount, to_amount);
                         }
                         if ui
-                            .add_enabled(sell_is_possible, Button::new("Sell"))
+                            .add_enabled(sell_is_possible.is_ok(), Button::new("Sell"))
+                            .on_hover_text(sell_hint_text)
+                            .on_disabled_hover_text(sell_hint_text)
                             .clicked()
                         {
                             let from_amount =
@@ -557,21 +730,22 @@ impl eframe::App for App {
                     // Show the quote book
 
                     let books = [
-                        worker.get_quote_book(self.swap_to_token_id, self.swap_from_token_id),
-                        worker.get_quote_book(self.swap_from_token_id, self.swap_to_token_id),
+                        worker.get_quote_book(self.counter_token_id, self.base_token_id),
+                        worker.get_quote_book(self.base_token_id, self.counter_token_id),
                     ];
-                    let headings = ["Bid", "Ask"];
+                    let headings = [QuoteSide::Bid, QuoteSide::Ask];
 
                     ScrollArea::vertical().show(ui, |ui| {
                         ui.columns(2, |columns| {
                             for idx in 0..2 {
                                 let ui = &mut columns[idx];
 
-                                ui.heading(headings[idx]);
+                                ui.heading(headings[idx].to_string());
 
                                 Grid::new(format!("{}_table", headings[idx])).show(ui, |ui| {
                                     ui.label("Price              ");
                                     ui.label("Volume             ");
+                                    ui.label(" ");
                                     ui.end_row();
 
                                     for validated_quote in books.get(idx).unwrap() {
@@ -581,8 +755,19 @@ impl eframe::App for App {
                                             &token_infos,
                                         ) {
                                             Ok(info) => {
+                                                assert_eq!(info.quote_side, headings[idx]);
                                                 ui.label(info.price.to_string());
                                                 ui.label(info.volume.to_string());
+                                                match validated_quote.is_ours.as_ref() {
+                                                    Some(utxo) => {
+                                                        if ui.button("⊗").clicked() {
+                                                            worker.self_spend(utxo)
+                                                        }
+                                                    }
+                                                    None => {
+                                                        ui.label("");
+                                                    }
+                                                }
                                                 ui.end_row();
                                             }
                                             Err(err) => {

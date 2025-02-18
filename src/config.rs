@@ -23,4 +23,8 @@ pub struct Config {
     /// Deqs URI. (Optional)
     #[clap(long, env = "MC_DEQS_URI")]
     pub deqs_uri: Option<DeqsClientUri>,
+
+    /// Pixels per point. Set this if the display is too large or too small for your monitor. Default is 2 but on a high res monitor 4 is better.
+    #[clap(long, env)]
+    pub pixels_per_point: Option<u16>,
 }
