@@ -104,14 +104,24 @@ impl ValidatedQuote {
                 if !self.amounts.required_outputs.is_empty() {
                     return Err("Ask SCI is too complicated for this implementation (mixing partial fill and required outputs)".to_owned());
                 }
-                if self.amounts.partial_fill_outputs.iter().any(|output| output.token_id != counter_token_id) {
+                if self
+                    .amounts
+                    .partial_fill_outputs
+                    .iter()
+                    .any(|output| output.token_id != counter_token_id)
+                {
                     return Err("Ask SCI does not belong to this book (partial fill output has unexpected token id)".to_owned());
                 }
                 let counter_volume = match self.amounts.partial_fill_outputs.len() {
                     1 | 2 => {
-                        let total: u128 = self.amounts.partial_fill_outputs.iter().map(|output| output.value as u128).sum();
-                        Decimal::new(total.try_into().unwrap(), counter_token_info.decimals)                    
-                    },
+                        let total: u128 = self
+                            .amounts
+                            .partial_fill_outputs
+                            .iter()
+                            .map(|output| output.value as u128)
+                            .sum();
+                        Decimal::new(total.try_into().unwrap(), counter_token_info.decimals)
+                    }
                     _ => {
                         return Err("Ask SCI is too complicated for this implementation (expected one partial fill output, + maybe fee output)".to_owned());
                     }
@@ -132,16 +142,26 @@ impl ValidatedQuote {
                 if !self.amounts.partial_fill_outputs.is_empty() {
                     return Err("Invalid Ask SCI".to_owned());
                 }
-                if self.amounts.required_outputs.iter().any(|output| output.token_id != counter_token_id) {
+                if self
+                    .amounts
+                    .required_outputs
+                    .iter()
+                    .any(|output| output.token_id != counter_token_id)
+                {
                     return Err("Ask SCI does not belong to this book (required output has unexpected token id)".to_owned());
                 }
                 let counter_volume = match self.amounts.required_outputs.len() {
                     1 | 2 => {
-                        let total: u128 = self.amounts.required_outputs.iter().map(|output| output.value as u128).sum();
-                        Decimal::new(total.try_into().unwrap(), counter_token_info.decimals)                                        
-                    },
+                        let total: u128 = self
+                            .amounts
+                            .required_outputs
+                            .iter()
+                            .map(|output| output.value as u128)
+                            .sum();
+                        Decimal::new(total.try_into().unwrap(), counter_token_info.decimals)
+                    }
                     _ => {
-                        return Err("Ask SCI is too complicated for this implementation (expected one required output, + maybe fee output)".to_owned());                    
+                        return Err("Ask SCI is too complicated for this implementation (expected one required output, + maybe fee output)".to_owned());
                     }
                 };
                 let volume = Decimal::new(
@@ -168,17 +188,27 @@ impl ValidatedQuote {
                 if !self.amounts.required_outputs.is_empty() {
                     return Err("Bid SCI is too complicated for this implementation (mixing partial fill and required outputs)".to_owned());
                 }
-                if self.amounts.partial_fill_outputs.iter().any(|output| output.token_id != base_token_id) {
+                if self
+                    .amounts
+                    .partial_fill_outputs
+                    .iter()
+                    .any(|output| output.token_id != base_token_id)
+                {
                     return Err("Bid SCI does not belong to this book (partial fill output has unexpected token id)".to_owned());
                 }
                 let volume = match self.amounts.partial_fill_outputs.len() {
                     1 | 2 => {
-                        let total: u128 = self.amounts.partial_fill_outputs.iter().map(|output| output.value as u128).sum();
-                        Decimal::new(total.try_into().unwrap(), base_token_info.decimals)                    
-                    },
+                        let total: u128 = self
+                            .amounts
+                            .partial_fill_outputs
+                            .iter()
+                            .map(|output| output.value as u128)
+                            .sum();
+                        Decimal::new(total.try_into().unwrap(), base_token_info.decimals)
+                    }
                     _ => {
                         return Err("Bid SCI is too complicated for this implementation (expected one partial fill output, + maybe fee output)".to_owned());
-                    },
+                    }
                 };
                 let counter_volume = Decimal::new(
                     self.amounts.pseudo_output.value.try_into().unwrap(),
@@ -196,16 +226,26 @@ impl ValidatedQuote {
                 if !self.amounts.partial_fill_outputs.is_empty() {
                     return Err("Invalid Bid SCI".to_owned());
                 }
-                if self.amounts.required_outputs.iter().any(|output| output.token_id != base_token_id) {
+                if self
+                    .amounts
+                    .required_outputs
+                    .iter()
+                    .any(|output| output.token_id != base_token_id)
+                {
                     return Err("Bid SCI does not belong to this book (required output has unexpected token id)".to_owned());
                 }
                 let volume = match self.amounts.required_outputs.len() {
                     1 | 2 => {
-                        let total: u128 = self.amounts.required_outputs.iter().map(|output| output.value as u128).sum();
-                        Decimal::new(total.try_into().unwrap(), base_token_info.decimals)                                        
-                    },
+                        let total: u128 = self
+                            .amounts
+                            .required_outputs
+                            .iter()
+                            .map(|output| output.value as u128)
+                            .sum();
+                        Decimal::new(total.try_into().unwrap(), base_token_info.decimals)
+                    }
                     _ => {
-                        return Err("Bid SCI is too complicated for this implementation (expected one required output, + maybe fee output)".to_owned());                    
+                        return Err("Bid SCI is too complicated for this implementation (expected one required output, + maybe fee output)".to_owned());
                     }
                 };
                 let counter_volume = Decimal::new(

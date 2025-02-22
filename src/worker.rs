@@ -41,6 +41,8 @@ pub struct Worker {
     minimum_fees: HashMap<TokenId, u64>,
     /// The chain id of the network
     chain_id: String,
+    /// Deqs setup data (if any)
+    deqs_setup_data: Option<DeqsSetupData>,
     /// The state that is mutable after initialization (updated by worker thread)
     state: Arc<Mutex<WorkerState>>,
     /// The worker thread handle
@@ -91,6 +93,14 @@ struct MobilecoindSetupData {
     pub chain_id: String,
 }
 
+// Data returned when we try to connect to the dex and get its config
+struct DeqsSetupData {
+    // The number of dex fee basis points
+    pub deqs_fee_basis_points: u32,
+    // The dex fee public address
+    pub deqs_fee_address: external::PublicAddress,
+}
+
 impl Worker {
     /// Initialize a new worker from config
     pub fn new(config: Config) -> Result<Arc<Self>, WorkerInitError> {
@@ -115,7 +125,11 @@ impl Worker {
         } = loop {
             match Self::try_new_mobilecoind(&mobilecoind_api_client, &account_key) {
                 Ok(result) => break result,
-                Err(err) => event!(Level::ERROR, "Initialization failed, will retry: {}", err),
+                Err(err) => event!(
+                    Level::ERROR,
+                    "MCD Initialization failed, will retry: {}",
+                    err
+                ),
             }
             if retries == 0 {
                 return Err(WorkerInitError::Mobilecoind);
@@ -129,6 +143,26 @@ impl Worker {
 
             DeqsClient::new(ch)
         });
+
+        let deqs_setup_data = if let Some(deqs_client) = deqs_client.as_ref() {
+            loop {
+                match Self::try_new_deqs(&deqs_client) {
+                    Ok(result) => break Some(result),
+                    Err(err) => event!(
+                        Level::ERROR,
+                        "DEQS Initialization failed, will retry: {}",
+                        err
+                    ),
+                }
+                if retries == 0 {
+                    return Err(WorkerInitError::Deqs);
+                }
+                retries -= 1;
+                std::thread::sleep(Duration::from_millis(1000));
+            }
+        } else {
+            None
+        };
 
         let state = Arc::new(Mutex::new(WorkerState {
             total_blocks: 1,
@@ -164,6 +198,7 @@ impl Worker {
             monitor_b58_address,
             minimum_fees,
             chain_id,
+            deqs_setup_data,
             state,
             join_handle,
             stop_requested,
@@ -334,6 +369,14 @@ impl Worker {
         request.set_allow_partial_fill(true);
         request.set_counter_value(to_amount.value);
         request.set_counter_token_id(*to_amount.token_id);
+
+        if let Some(data) = self.deqs_setup_data.as_ref() {
+            if data.deqs_fee_basis_points != 0 {
+                request.set_fractional_fee_basis_points(data.deqs_fee_basis_points as u64);
+                request.set_fractional_fee_address(data.deqs_fee_address.clone());
+            }
+        }
+
         // Arbitrarily, minimum fill value is 10 * minimum_fee
         let min_fill_value = self
             .minimum_fees
@@ -730,6 +773,17 @@ impl Worker {
         })
     }
 
+    fn try_new_deqs(deqs_client: &DeqsClient) -> Result<DeqsSetupData, String> {
+        let mut resp = deqs_client
+            .get_config(&Default::default())
+            .map_err(|err| format!("Failed getting config: {err}"))?;
+
+        Ok(DeqsSetupData {
+            deqs_fee_basis_points: resp.fee_basis_points,
+            deqs_fee_address: resp.fee_address.take().unwrap(),
+        })
+    }
+
     fn worker_thread_entrypoint(
         monitor_id: Vec<u8>,
         mobilecoind_api_client: MobilecoindApiClient,
@@ -872,7 +926,11 @@ impl Worker {
                     *counter_token_id
                 );
                 let resp = client.get_quotes(&req)?;
-                event!(Level::TRACE, "got {} quotes in response: ", resp.get_quotes().len()); 
+                event!(
+                    Level::TRACE,
+                    "got {} quotes in response: ",
+                    resp.get_quotes().len()
+                );
                 let validated_quotes: Vec<ValidatedQuote> = resp
                     .get_quotes()
                     .iter()
@@ -916,4 +974,6 @@ impl Worker {
 pub enum WorkerInitError {
     /// Failed to initialize with mobilecoind
     Mobilecoind,
+    /// Failed to initialize with deqs
+    Deqs,
 }
